@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 
+	"cloud.google.com/go/pubsub"
+
 	"github.com/Dynom/ERI/cmd/web/erihttp/handlers"
 	"github.com/Dynom/ERI/cmd/web/hitlist"
 	"github.com/Dynom/ERI/types"
@@ -66,6 +68,58 @@ func validatorPersistProxy(persist *sync.Map, logger logrus.FieldLogger, fn vali
 				"validations": vr.Validations.String(),
 			}).Debug("Persisted result")
 		}
+
+		return vr
+	}
+}
+
+func validatorNotifyProxy(topic *pubsub.Topic, hitList *hitlist.HitList, logger logrus.FieldLogger, fn validator.CheckFn) validator.CheckFn {
+	log := logger.WithField("middleware", "notification_publisher")
+	return func(ctx context.Context, parts types.EmailParts, options ...validator.ArtifactFn) validator.Result {
+		log := log.WithField(handlers.RequestID.String(), ctx.Value(handlers.RequestID))
+		vr := fn(ctx, parts, options...)
+
+		//_, exists := hitList.GetDomainValidationResult(hitlist.Domain(parts.Domain))
+		//if exists {
+		//	return vr
+		//}
+
+		log.WithFields(logrus.Fields{
+			"topic": topic.String(),
+		}).Debug("Publishing result")
+
+		pr := topic.Publish(ctx, &pubsub.Message{
+			Data: []byte("ZOMG THE DATA"),
+			Attributes: map[string]string{
+				"eri_version": Version,
+			},
+		})
+
+		<-pr.Ready()
+
+		sid, err := pr.Get(ctx)
+		if err != nil {
+			log.WithError(err).Errorf("Error reading Publish Result")
+			return vr
+		}
+
+		log.WithField("server_id", sid).Debug("Done publishing")
+
+		toNotify := struct {
+			Channel          string
+			Local            string
+			Domain           string
+			ValidationResult validator.Result
+		}{
+			Channel:          "foo",
+			Local:            parts.Local,
+			Domain:           parts.Domain,
+			ValidationResult: vr,
+		}
+
+		_ = toNotify
+		_ = log
+		_ = topic
 
 		return vr
 	}

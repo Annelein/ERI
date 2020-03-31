@@ -45,6 +45,18 @@ type HitList struct {
 	h    hash.Hash
 }
 
+func (hl *HitList) GetDomainValidationResult(d Domain) (validator.Result, bool) {
+	hl.lock.RLock()
+	hit, ok := hl.hits[d]
+	hl.lock.RUnlock()
+
+	if ok {
+		return hit.ValidationResult, ok
+	}
+
+	return validator.Result{}, ok
+}
+
 // GetValidAndUsageSortedDomains returns the used domains, sorted by their associated recipients (high>low)
 func (hl *HitList) GetValidAndUsageSortedDomains() []string {
 	hl.lock.RLock()

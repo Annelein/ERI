@@ -32,7 +32,10 @@ func newLogger(conf config.Config) (*logrus.Logger, *io.PipeWriter, error) {
 	if conf.Server.Log.Format == config.LFJSON {
 		logger.SetFormatter(&logrus.JSONFormatter{})
 	} else {
-		logger.SetFormatter(&logrus.TextFormatter{})
+		logger.SetFormatter(&logrus.TextFormatter{
+			FullTimestamp:   true,
+			TimestampFormat: `15:04:05.999999`, //time.RFC3339Nano,
+		})
 	}
 
 	logger.SetOutput(os.Stdout)

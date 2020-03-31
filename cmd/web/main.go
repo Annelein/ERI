@@ -1,12 +1,19 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
+
+	"google.golang.org/api/option"
+
+	"cloud.google.com/go/pubsub"
 
 	"github.com/rs/cors"
 
@@ -69,10 +76,64 @@ func main() {
 		panic(err)
 	}
 
+	psClient, err := pubsub.NewClient(
+		context.Background(),
+		conf.Server.GCP.ProjectID,
+		option.WithUserAgent("eri-"+Version),
+		option.WithCredentialsFile(conf.Server.GCP.CredentialsFile),
+	)
+
+	if err != nil {
+		panic(err)
+	}
+
+	topic := psClient.Topic(conf.Server.GCP.PubSubTopic)
+	if ok, err := topic.Exists(context.Background()); !ok || err != nil {
+		logger.WithError(err).Errorf("Topic %q doesn't exist", conf.Server.GCP.PubSubTopic)
+		panic(fmt.Sprintf("Topic %q doesn't exist", conf.Server.GCP.PubSubTopic))
+	}
+
 	hitList := hitlist.New(
 		h,
 		time.Hour*60, // @todo figure out what todo with TTLs
 	)
+
+	subscriptionLabel := `eri-` + Version + `-` + strconv.FormatInt(time.Now().Unix(), 10)
+	logger.WithFields(logrus.Fields{
+		"subscription_label": subscriptionLabel,
+	}).Info("Creating subscription")
+
+	subscription, err := psClient.CreateSubscription(
+		context.Background(),
+		subscriptionLabel,
+		pubsub.SubscriptionConfig{
+			Topic:               topic,
+			AckDeadline:         time.Second * 600,
+			RetainAckedMessages: false,
+			ExpirationPolicy:    time.Hour * 25,
+		},
+	)
+
+	if err != nil {
+		panic(fmt.Sprintf("Failed to create subscription %s", err))
+	}
+
+	go func() {
+		logger.WithField("subscription", subscription).Info("Subscription created, starting receiver...")
+		err := subscription.Receive(context.Background(), func(ctx context.Context, message *pubsub.Message) {
+			logger.WithFields(
+				logrus.Fields{
+					"msg_id": message.ID,
+					"data":   string(message.Data),
+				}).Info("Received something on the subscription")
+
+			message.Ack()
+		})
+
+		if err != nil {
+			logger.WithError(err).Warn("Error with pub/sub receivers")
+		}
+	}()
 
 	myFinder, err := finder.New(
 		hitList.GetValidAndUsageSortedDomains(),
@@ -100,6 +161,7 @@ func main() {
 
 	// Wrap it
 	checkValidator = validatorPersistProxy(validationResultPersister, logger, checkValidator)
+	checkValidator = validatorNotifyProxy(topic, hitList, logger, checkValidator)
 	checkValidator = validatorUpdateFinderProxy(myFinder, hitList, logger, checkValidator)
 	checkValidator = validatorCacheProxy(validationResultCache, logger, checkValidator)
 

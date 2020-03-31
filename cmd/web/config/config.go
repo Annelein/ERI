@@ -80,6 +80,11 @@ type Config struct {
 			Capacity  uint     `toml:"capacity"`
 			ParkedTTL Duration `toml:"parkedTTL" flag:"parked-ttl"`
 		} `toml:"rateLimiter"`
+		GCP struct {
+			ProjectID       string `toml:"projectId"`
+			PubSubTopic     string `toml:"pubSubTopic"`
+			CredentialsFile string `toml:"credentialsFile" env:"APPLICATION_CREDENTIALS"`
+		} `toml:"GCP" flag:"gcp" env:"GOOGLE"`
 		PathStrip string `toml:"pathStrip"`
 	} `toml:"server" flag:",inline" env:",inline"`
 }

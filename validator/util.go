@@ -144,6 +144,8 @@ func fetchMXHosts(ctx context.Context, resolver LookupMX, domain string) ([]stri
 //nolint:gocyclo
 func MightBeAHostOrIP(h string) bool {
 
+	// @todo merge with looksLikeValidDomain() -- Do we want regex fallback?
+
 	// Normally we can assume that host names have a tld or consists at least out of 4 characters
 	lastCharIndex := len(h) - 1
 	if 3 >= lastCharIndex || lastCharIndex >= 253 {
@@ -153,12 +155,13 @@ func MightBeAHostOrIP(h string) bool {
 	var dotCount uint8
 	for i, c := range h {
 		switch {
-		case 48 <= c && c <= 57 /* 0-9 */ :
-		case 65 <= c && c <= 90 /* A-Z */ :
 		case 97 <= c && c <= 122 /* a-z */ :
-		case c == 45 /* dash - */ :
 		case c == 46 && 0 < i /* dot . */ :
 			dotCount++
+
+		case 48 <= c && c <= 57 /* 0-9 */ :
+		case 65 <= c && c <= 90 /* A-Z */ :
+		case c == 45 /* dash - */ :
 		default:
 			return false
 		}

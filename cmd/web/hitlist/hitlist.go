@@ -1,6 +1,7 @@
 package hitlist
 
 import (
+	"bytes"
 	"hash"
 	"sort"
 	"strings"
@@ -45,6 +46,26 @@ type HitList struct {
 	h    hash.Hash
 }
 
+// Has returns true if HitList knows about (part of) the argument
+func (hl *HitList) Has(parts types.EmailParts) (domain, local bool) {
+	recipient := Recipient(hl.h.Sum([]byte(parts.Local)))
+
+	hl.lock.RLock()
+	defer hl.lock.RUnlock()
+
+	if hit, ok := hl.hits[Domain(parts.Domain)]; ok {
+		domain = true
+		for _, v := range hit.Recipients {
+			if bytes.Equal(recipient, v) {
+				local = true
+				return
+			}
+		}
+	}
+
+	return
+}
+
 func (hl *HitList) GetDomainValidationResult(d Domain) (validator.Result, bool) {
 	hl.lock.RLock()
 	hit, ok := hl.hits[d]
@@ -66,6 +87,14 @@ func (hl *HitList) GetValidAndUsageSortedDomains() []string {
 	return domains
 }
 
+func (hl *HitList) Add(parts types.EmailParts, vr validator.Result) error {
+	if parts.Local == "" {
+		return hl.AddDomain(parts.Domain, vr)
+	}
+
+	return hl.AddEmailAddress(parts.Address, vr)
+}
+
 // AddEmailAddressDeadline Same as AddEmailAddress, but allows for custom TTL. Duration shouldn't be negative.
 func (hl *HitList) AddEmailAddressDeadline(email string, vr validator.Result, duration time.Duration) error {
 	var domain Domain
@@ -73,7 +102,7 @@ func (hl *HitList) AddEmailAddressDeadline(email string, vr validator.Result, du
 
 	{
 		email = strings.ToLower(email)
-		parts, err := types.NewEmailParts(email)
+		parts, err := types.NewEmailParts(email) // @todo prevent multiple calls to types.NewEmailParts()
 		if err != nil {
 			return err
 		}

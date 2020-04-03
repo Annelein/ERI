@@ -53,6 +53,12 @@ func (v *Validations) SetFlag(new Flag) Validations {
 	return *v
 }
 
+// RemoveFlag removes a flag and returns a copy
+func (v *Validations) RemoveFlag(f Flag) Validations {
+	*v &^= Validations(f)
+	return *v
+}
+
 // HasFlag returns true if the type has the flag (or flags) specified
 func (v Validations) HasFlag(f Flag) bool {
 	return v&Validations(f) != 0

@@ -90,6 +90,7 @@ func Test_checkEmailAddressSyntax(t *testing.T) {
 		// All bad
 		{name: "Invalid visible character", email: "js@d.org>", wantErr: true},
 		{name: "ending on a dot", email: "js@example.org.", wantErr: true},
+		{name: "ending on a dot", email: "joh n@hot1mail.com", wantErr: true},
 
 		// Not picked up by mail.ParseAddress
 		{name: "Invalid characters (NBSP)", email: "j\u00a0s@example.org", wantErr: true},

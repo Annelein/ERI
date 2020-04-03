@@ -5,11 +5,14 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/juju/ratelimit"
 	"github.com/sirupsen/logrus"
 )
 
-func NewRateLimitHandler(logger logrus.FieldLogger, b *ratelimit.Bucket, maxDelay time.Duration) HandlerWrapper {
+type TakeMaxDuration interface {
+	TakeMaxDuration(count int64, maxWait time.Duration) (time.Duration, bool)
+}
+
+func NewRateLimitHandler(logger logrus.FieldLogger, b TakeMaxDuration, maxDelay time.Duration) HandlerWrapper {
 	if b == nil {
 		logger.Info("Rate Limiter disabled, no bucket defined.")
 		return func(h http.Handler) http.Handler {

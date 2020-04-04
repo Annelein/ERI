@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dynom/ERI/types"
 	"github.com/Dynom/ERI/validator"
 	"github.com/Dynom/ERI/validator/validations"
 )
@@ -287,8 +288,8 @@ func (s mockHasher) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (s mockHasher) Sum(_ []byte) []byte {
-	return s.v
+func (s mockHasher) Sum(p []byte) []byte {
+	return p
 }
 
 func (s mockHasher) Reset() {
@@ -526,6 +527,149 @@ func TestHitList_AddDomain(t *testing.T) {
 
 			if vr := hl.hits[Domain(tt.args.d)].ValidationResult; !reflect.DeepEqual(vr, tt.wantVR) {
 				t.Errorf("Expected the Validation Result to be \n%+v, instead I got \n%+v", tt.wantVR, vr)
+			}
+		})
+	}
+}
+
+func TestHitList_Add(t *testing.T) {
+
+	type args struct {
+		parts types.EmailParts
+		vr    validator.Result
+	}
+
+	tests := []struct {
+		name           string
+		args           args
+		wantErr        bool
+		domainAdded    bool
+		recipientCount int
+	}{
+		{
+			name: "Add empty local should add only domain", args: args{
+				parts: types.NewEmailFromParts("", "gmail.com"),
+				vr:    validator.Result{},
+			},
+			wantErr:        false,
+			domainAdded:    true,
+			recipientCount: 0,
+		},
+		{
+			name: "Add full", args: args{
+				parts: types.NewEmailFromParts("john", "gmail.com"),
+				vr:    validator.Result{},
+			},
+			wantErr:        false,
+			domainAdded:    true,
+			recipientCount: 1,
+		},
+		{
+			name: "Add local only", args: args{
+				parts: types.NewEmailFromParts("john", ""),
+				vr:    validator.Result{},
+			},
+			wantErr:        true,
+			domainAdded:    false,
+			recipientCount: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hl := New(mockHasher{}, time.Hour*1)
+			if err := hl.Add(tt.args.parts, tt.args.vr); (err != nil) != tt.wantErr {
+				t.Errorf("Add() error = %v, wantErr %v", err, tt.wantErr)
+			}
+
+			domain := Domain(tt.args.parts.Domain)
+			_, exists := hl.GetDomainValidationResult(domain)
+			if exists != tt.domainAdded {
+				t.Errorf("Domain wasn't added, while it should've been")
+			}
+
+			if rcnt := len(hl.hits[domain].Recipients); rcnt != tt.recipientCount {
+				t.Errorf("Expected %d recipients to have been added, instead I have %d", tt.recipientCount, rcnt)
+			}
+		})
+	}
+}
+
+func TestHitList_Has(t *testing.T) {
+	type args struct {
+		parts types.EmailParts
+	}
+
+	tests := []struct {
+		name       string
+		toAdd      []types.EmailParts
+		args       args
+		wantDomain bool
+		wantLocal  bool
+	}{
+		{
+			name: "exact match",
+			toAdd: []types.EmailParts{
+				types.NewEmailFromParts("john", "example.org"),
+			},
+			args: args{
+				parts: types.NewEmailFromParts("john", "example.org"),
+			},
+			wantDomain: true,
+			wantLocal:  true,
+		},
+		{
+			name: "exact match, after normalisation",
+			toAdd: []types.EmailParts{
+				types.NewEmailFromParts("JOHN", "EXAMPLE.ORG"),
+			},
+			args: args{
+				parts: types.NewEmailFromParts("john", "example.org"),
+			},
+			wantDomain: true,
+			wantLocal:  true,
+		},
+		{
+			name: "domain but not local match",
+			toAdd: []types.EmailParts{
+				types.NewEmailFromParts("john", "example.org"),
+			},
+			args: args{
+				parts: types.NewEmailFromParts("jane", "example.org"),
+			},
+			wantDomain: true,
+			wantLocal:  false,
+		},
+		{
+			name: "no match",
+			toAdd: []types.EmailParts{
+				types.NewEmailFromParts("john", "example.com"),
+			},
+			args: args{
+				parts: types.NewEmailFromParts("jane", "example.org"),
+			},
+			wantDomain: false,
+			wantLocal:  false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hl := New(mockHasher{}, time.Hour*1)
+			for _, p := range tt.toAdd {
+				err := hl.Add(p, validator.Result{})
+				if err != nil {
+					t.Errorf("Failed adding parts, test setup failed.")
+					return
+				}
+			}
+
+			gotDomain, gotLocal := hl.Has(tt.args.parts)
+			if gotDomain != tt.wantDomain {
+				t.Errorf("Has() gotDomain = %v, want %v", gotDomain, tt.wantDomain)
+			}
+
+			if gotLocal != tt.wantLocal {
+				t.Errorf("Has() gotLocal = %v, want %v", gotLocal, tt.wantLocal)
 			}
 		})
 	}

@@ -76,8 +76,8 @@ type Config struct {
 			Playground   bool `toml:"playground"`
 		} `toml:"graphql" flag:"graphql" env:"GRAPHQL"`
 		RateLimiter struct {
-			Rate      uint     `toml:"rate"`
-			Capacity  uint     `toml:"capacity"`
+			Rate      int64    `toml:"rate"`
+			Capacity  int64    `toml:"capacity"`
 			ParkedTTL Duration `toml:"parkedTTL" flag:"parked-ttl"`
 		} `toml:"rateLimiter"`
 		GCP struct {

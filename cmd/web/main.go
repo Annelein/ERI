@@ -197,7 +197,7 @@ func main() {
 
 	var bucket *ratelimit.Bucket
 	if conf.Server.RateLimiter.Rate > 0 && conf.Server.RateLimiter.Capacity > 0 {
-		bucket = ratelimit.NewBucketWithRate(float64(conf.Server.RateLimiter.Rate), int64(conf.Server.RateLimiter.Capacity))
+		bucket = ratelimit.NewBucketWithRate(float64(conf.Server.RateLimiter.Rate), conf.Server.RateLimiter.Capacity)
 	}
 
 	ct := cors.New(cors.Options{

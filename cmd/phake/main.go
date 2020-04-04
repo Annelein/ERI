@@ -116,7 +116,7 @@ func main() {
 					fmt.Printf("Sending batch")
 
 					for _, d := range domains {
-						fmt.Fprintf(os.Stderr, wrapInJSON(eriHost, d.Value))
+						fmt.Fprintf(os.Stderr, wrapInJSON(eriHost, `john.doe@`+d.Value))
 					}
 
 					//err := sendBatch(http.DefaultClient, domains, eriHost, action)
@@ -134,7 +134,7 @@ func main() {
 			if err == io.EOF {
 				if len(domain) > 0 {
 					for _, d := range domains {
-						fmt.Fprintf(os.Stderr, wrapInJSON(eriHost, d.Value))
+						fmt.Fprintf(os.Stderr, wrapInJSON(eriHost, `john.doe@`+d.Value))
 					}
 					//err := sendBatch(http.DefaultClient, domains, eriHost, action)
 					//if err != nil {

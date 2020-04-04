@@ -2,18 +2,22 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/Dynom/ERI/cmd/web/pubsub"
+	"github.com/Dynom/ERI/cmd/web/pubsub/gcp"
+	"github.com/Dynom/ERI/types"
 	"google.golang.org/api/option"
 
-	"cloud.google.com/go/pubsub"
+	gcppubsub "cloud.google.com/go/pubsub"
 
 	"github.com/rs/cors"
 
@@ -67,16 +71,21 @@ func main() {
 	defer deferClose(logWriter, nil)
 
 	logger = logger.WithField("version", Version)
+	if conf.Server.InstanceID != "" {
+		logger = logger.WithField("instance_id", conf.Server.InstanceID)
+	}
+
 	logger.WithFields(logrus.Fields{
 		"config": conf,
 	}).Info("Starting up...")
 
 	h, err := highwayhash.New128([]byte(conf.Server.Hash.Key))
 	if err != nil {
-		panic(err)
+		logger.WithError(err).Error("Unable to create our hash.Hash")
+		os.Exit(1)
 	}
 
-	psClient, err := pubsub.NewClient(
+	psClient, err := gcppubsub.NewClient(
 		context.Background(),
 		conf.Server.GCP.ProjectID,
 		option.WithUserAgent("eri-"+Version),
@@ -84,57 +93,44 @@ func main() {
 	)
 
 	if err != nil {
-		panic(err)
+		logger.WithError(err).Error("Unable to create the pub/sub client")
+		os.Exit(1)
 	}
 
-	topic := psClient.Topic(conf.Server.GCP.PubSubTopic)
-	if ok, err := topic.Exists(context.Background()); !ok || err != nil {
-		logger.WithError(err).Errorf("Topic %q doesn't exist", conf.Server.GCP.PubSubTopic)
-		panic(fmt.Sprintf("Topic %q doesn't exist", conf.Server.GCP.PubSubTopic))
-	}
+	psSvc := gcp.NewPubSubSvc(
+		logger,
+		psClient,
+		conf.Server.GCP.PubSubTopic,
+		gcp.WithSubscriptionLabels([]string{Version, conf.Server.InstanceID, strconv.FormatInt(time.Now().Unix(), 10)}),
+	)
+
+	// Setting up listening to notifications
+	pubSubCtx, cancel := context.WithCancel(context.Background())
+
+	// Set up channel on which to send signal notifications.
+	// We must use a buffered channel or risk missing the signal
+	// if we're not ready to receive when the signal is sent.
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGTERM, syscall.SIGINT)
+
+	// Cleanup resources when we're interrupted
+	go func() {
+		s := <-c
+		logger.Printf("Captured signal: %v. Starting cleanup", s)
+		logger.Debug("Canceling context")
+		cancel()
+
+		logger.Debug("Closing Pub/Sub service")
+		deferClose(psSvc, logger)
+
+		signal.Stop(c)
+		os.Exit(0)
+	}()
 
 	hitList := hitlist.New(
 		h,
 		time.Hour*60, // @todo figure out what todo with TTLs
 	)
-
-	subscriptionLabel := `eri-` + Version + `-` + strconv.FormatInt(time.Now().Unix(), 10)
-	logger.WithFields(logrus.Fields{
-		"subscription_label": subscriptionLabel,
-	}).Info("Creating subscription")
-
-	subscription, err := psClient.CreateSubscription(
-		context.Background(),
-		subscriptionLabel,
-		pubsub.SubscriptionConfig{
-			Topic:               topic,
-			AckDeadline:         time.Second * 600,
-			RetainAckedMessages: false,
-			ExpirationPolicy:    time.Hour * 25,
-		},
-	)
-
-	if err != nil {
-		panic(fmt.Sprintf("Failed to create subscription %s", err))
-	}
-
-	go func() {
-		logger.WithField("subscription", subscription).Info("Subscription created, starting receiver...")
-		err := subscription.Receive(context.Background(), func(ctx context.Context, message *pubsub.Message) {
-			logger.WithFields(
-				logrus.Fields{
-					"msg_id": message.ID,
-					"data":   string(message.Data),
-				}).Info("Received something on the subscription")
-
-			message.Ack()
-		})
-
-		if err != nil {
-			logger.WithError(err).Warn("Error with pub/sub receivers")
-		}
-	}()
-
 	myFinder, err := finder.New(
 		hitList.GetValidAndUsageSortedDomains(),
 		finder.WithLengthTolerance(0.2),
@@ -143,7 +139,42 @@ func main() {
 	)
 
 	if err != nil {
-		panic(err)
+		logger.WithError(err).Error("Unable to create Finder")
+		os.Exit(1)
+	}
+
+	logger.Debug("Starting listener...")
+	err = psSvc.Listen(pubSubCtx, func(ctx context.Context, notification pubsub.Notification) {
+		parts := types.NewEmailFromParts(notification.Data.Local, notification.Data.Domain)
+		if _, exists := hitList.Has(parts); exists {
+			logger.WithFields(logrus.Fields{
+				"notification": notification,
+			}).Debug("Ignoring notification, as it's already known")
+			return
+		}
+
+		vr := validator.Result{
+			Validations: notification.Data.Validations,
+			Steps:       notification.Data.Steps,
+		}
+
+		err := hitList.Add(parts, vr)
+		if err != nil {
+			logger.WithFields(logrus.Fields{
+				"error": err,
+				"data":  notification.Data,
+				"ctx":   ctx.Err(),
+			}).Error("Unable to add to hitlist")
+		}
+
+		if vr.Validations.IsValidationsForValidDomain() && !myFinder.Exact(parts.Domain) {
+			myFinder.Refresh(hitList.GetValidAndUsageSortedDomains())
+		}
+	})
+
+	if err != nil {
+		logger.WithError(err).Error("Failed constructing pub/sub client")
+		os.Exit(1)
 	}
 
 	var dialer = &net.Dialer{}
@@ -151,7 +182,7 @@ func main() {
 		setCustomResolver(dialer, conf.Server.Validator.Resolver)
 	}
 
-	validationResultCache := &sync.Map{}
+	// @todo add a real persisting layer
 	validationResultPersister := &sync.Map{}
 
 	val := validator.NewEmailAddressValidator(dialer)
@@ -160,10 +191,10 @@ func main() {
 	checkValidator := mapValidatorTypeToValidatorFn(conf.Server.Validator.SuggestValidator, val)
 
 	// Wrap it
-	checkValidator = validatorPersistProxy(validationResultPersister, logger, checkValidator)
-	checkValidator = validatorNotifyProxy(topic, hitList, logger, checkValidator)
+	checkValidator = validatorPersistProxy(validationResultPersister, hitList, logger, checkValidator)
+	checkValidator = validatorNotifyProxy(psSvc, hitList, logger, checkValidator)
 	checkValidator = validatorUpdateFinderProxy(myFinder, hitList, logger, checkValidator)
-	checkValidator = validatorCacheProxy(validationResultCache, logger, checkValidator)
+	checkValidator = validatorHitListProxy(hitList, logger, checkValidator)
 
 	// Use it
 	suggestSvc := services.NewSuggestService(myFinder, checkValidator, logger)

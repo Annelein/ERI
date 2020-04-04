@@ -12,7 +12,7 @@ var (
 // NewEmailFromParts reconstructs EmailParts from two parts
 func NewEmailFromParts(local, domain string) EmailParts {
 	return EmailParts{
-		Address: local + `@` + domain,
+		Address: local + "@" + domain,
 		Local:   local,
 		Domain:  domain,
 	}

@@ -3,7 +3,7 @@ module github.com/Dynom/ERI
 go 1.14
 
 require (
-	cloud.google.com/go v0.55.0 // indirect
+	cloud.google.com/go v0.56.0 // indirect
 	cloud.google.com/go/pubsub v1.3.1
 	github.com/BurntSushi/toml v0.3.1
 	github.com/Dynom/TySug v0.1.3
@@ -22,10 +22,9 @@ require (
 	github.com/sirupsen/logrus v1.5.0
 	github.com/stretchr/testify v1.4.0 // indirect
 	golang.org/x/net v0.0.0-20200324143707-d3edc9973b7e // indirect
-	golang.org/x/sys v0.0.0-20200327173247-9dae0f8f5775 // indirect
-	golang.org/x/tools v0.0.0-20200330040139-fa3cc9eebcfe // indirect
+	golang.org/x/tools v0.0.0-20200402223321-bcf690261a44 // indirect
 	google.golang.org/api v0.20.0
-	google.golang.org/genproto v0.0.0-20200326112834-f447254575fd // indirect
+	google.golang.org/genproto v0.0.0-20200403120447-c50568487044 // indirect
 	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 // indirect
 )
 

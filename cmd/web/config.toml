@@ -43,7 +43,7 @@
   [server.profiler]
 
     # Enable pprof @see https://blog.golang.org/pprof
-    enable = false
+    enable = true
 
     # The prefix to use in the request path /<prefix>/pprof/...
     prefix = "debug"

@@ -91,6 +91,8 @@ func Test_checkEmailAddressSyntax(t *testing.T) {
 		{name: "Invalid visible character", email: "js@d.org>", wantErr: true},
 		{name: "ending on a dot", email: "js@example.org.", wantErr: true},
 		{name: "ending on a dot", email: "joh n@hot1mail.com", wantErr: true},
+		{name: "missing local", email: "@hot1mail.com", wantErr: true},
+		{name: "missing domain", email: "john.doe@", wantErr: true},
 
 		// Not picked up by mail.ParseAddress
 		{name: "Invalid characters (NBSP)", email: "j\u00a0s@example.org", wantErr: true},
@@ -109,7 +111,7 @@ func Test_checkEmailAddressSyntax(t *testing.T) {
 			}
 
 			a.email, err = types.NewEmailParts(tt.email)
-			if err != nil {
+			if err != nil && !tt.wantErr {
 				t.Errorf("types.NewEmailParts(%q) error = %v", tt.email, err)
 			}
 
@@ -122,6 +124,27 @@ func Test_checkEmailAddressSyntax(t *testing.T) {
 			}
 		})
 	}
+
+	for _, tt := range []struct {
+		parts   types.EmailParts
+		wantErr bool
+	}{
+		{parts: types.NewEmailFromParts("", "example.org"), wantErr: true},
+		{parts: types.NewEmailFromParts("john.doe", ""), wantErr: true},
+	} {
+		t.Run("only structure check/"+tt.parts.Address, func(t *testing.T) {
+
+			a := &Artifact{
+				Validations: 0,
+				Timings:     make(Timings, 10),
+				email:       tt.parts,
+			}
+
+			if err := checkEmailAddressSyntax(a); (err != nil) != tt.wantErr {
+				t.Errorf("checkEmailAddressSyntax() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
 }
 func Test_checkDomainSyntax(t *testing.T) {
 	tests := []struct {
@@ -131,7 +154,7 @@ func Test_checkDomainSyntax(t *testing.T) {
 	}{
 		// All good
 		{name: "valid but short", domain: "wx.yz"},
-		{name: "with subdomain", domain: "doe.example.org"},
+		{name: "with sub-domain", domain: "doe.example.org"},
 		{name: "wrong tld, but valid syntax", domain: "example.mail"},
 
 		{name: "Unicode", domain: "อชนิค.ไทย"},
@@ -252,7 +275,7 @@ func Test_looksLikeValidDomain(t *testing.T) {
 		{want: true, domain: "テスト.テスト"},             // Japanese	Katakana
 		{want: true, domain: "பரிட்சை.பரிட்சை"},     // Tamil	Tamil
 
-		// Punycoded domains
+		// Punycode domains
 		{want: true, domain: "xn--kgbechtv.xn--kgbechtv"},
 		{want: true, domain: "xn--hgbk6aj7f53bba.xn--hgbk6aj7f53bba"},
 

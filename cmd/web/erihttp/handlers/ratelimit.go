@@ -22,15 +22,18 @@ func NewRateLimitHandler(logger logrus.FieldLogger, b TakeMaxDuration, maxDelay 
 		}
 	}
 
+	logger = logger.WithField("middleware", "rate_limiter")
 	return func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			d, ok := b.TakeMaxDuration(1, maxDelay)
+
 			logger := logger.WithFields(logrus.Fields{
 				"remote_addr":      r.RemoteAddr,
 				RequestID.String(): r.Context().Value(RequestID),
-				"max_delay":        maxDelay,
+				"max_delay":        maxDelay.String(),
+				"delay":            d.String(),
 			})
 
-			d, ok := b.TakeMaxDuration(1, maxDelay)
 			if !ok {
 				logger.Warn("rate limit: aborting request, above max allowed delay")
 
@@ -40,7 +43,7 @@ func NewRateLimitHandler(logger logrus.FieldLogger, b TakeMaxDuration, maxDelay 
 			}
 
 			if d > 0 {
-				logger.WithField("delay", d).Warn("rate limit: throttling request, will continue after delay")
+				logger.Warn("rate limit: throttling request, will continue after delay")
 				time.Sleep(d)
 			}
 

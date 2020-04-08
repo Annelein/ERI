@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	gcppubsub "cloud.google.com/go/pubsub"
@@ -276,13 +277,21 @@ func (svc *PubSubSvc) listen(ctx context.Context, subscription Subscription, fn 
 
 	svc.logger.WithField("subscription", subscription).Info("Starting receiver on subscription.")
 
+	receivedLock := sync.Mutex{}
+	ignoredLock := sync.Mutex{}
+	var received uint
+	var ignored uint
 	return subscription.Receive(ctx, func(ctx context.Context, message *gcppubsub.Message) {
 
-		logger := svc.logger.WithFields(logrus.Fields{
-			"msg_id": message.ID,
-		})
+		receivedLock.Lock()
+		received++
+		numSeen := received
+		receivedLock.Unlock()
 
-		logger.Debug("Received something on the subscription")
+		logger := svc.logger.WithFields(logrus.Fields{
+			"msg_id":             message.ID,
+			"notifications_seen": numSeen,
+		})
 
 		var notification pubsub.Notification
 
@@ -292,6 +301,7 @@ func (svc *PubSubSvc) listen(ctx context.Context, subscription Subscription, fn 
 				"error": err,
 				"data":  string(message.Data),
 			}).Warn("Unable to unmarshal notification")
+
 			message.Nack()
 			return
 		}
@@ -300,9 +310,15 @@ func (svc *PubSubSvc) listen(ctx context.Context, subscription Subscription, fn 
 
 		// Making sure we don't respond to our own publishing
 		if sid := svc.getSubscriptionID(); notification.SenderID == sid {
+			ignoredLock.Lock()
+			ignored++
+			numIgnored := ignored
+			ignoredLock.Unlock()
+
 			logger.WithFields(logrus.Fields{
-				"sender_id":       notification.SenderID,
-				"subscription_id": sid,
+				"sender_id":             notification.SenderID,
+				"subscription_id":       sid,
+				"notifications_ignored": numIgnored,
 			}).Debug("Ignoring notification sent by this instance.")
 			return
 		}

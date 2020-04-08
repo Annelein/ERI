@@ -20,6 +20,7 @@ func WithPathStrip(logger logrus.FieldLogger, path string) func(h http.Handler) 
 	}
 
 	path = normalizeSlashes(logger, path)
+	logger = logger.WithField("middleware", "path_strip")
 	return func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			logger := logger.WithField(RequestID.String(), r.Context().Value(RequestID))

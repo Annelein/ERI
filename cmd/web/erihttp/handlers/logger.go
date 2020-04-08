@@ -21,19 +21,23 @@ func (cv contextValue) String() string {
 }
 
 func WithRequestLogger(logger logrus.FieldLogger) HandlerWrapper {
+
+	logger = logger.WithField("middleware", "request_logger")
 	return func(handler http.Handler) http.Handler {
 
 		var reqID uint64
 		m := sync.Mutex{}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var now time.Time
+
+			writer := NewCustomResponseWriter(w)
+
 			m.Lock()
 			reqID++
+			rid := strconv.FormatUint(reqID, 10)
 			m.Unlock()
 
-			rid := strconv.FormatUint(reqID, 10)
-
-			l := logger.WithFields(logrus.Fields{
+			logger := logger.WithFields(logrus.Fields{
 				"request_id": rid,
 				"method":     r.Method,
 				"uri":        r.RequestURI,
@@ -41,16 +45,19 @@ func WithRequestLogger(logger logrus.FieldLogger) HandlerWrapper {
 
 			r = r.WithContext(context.WithValue(r.Context(), RequestID, rid))
 
-			l.Debug("Request start")
+			logger.Debug("Request start")
 
-			defer func() {
-				l.WithFields(logrus.Fields{
-					"time_µs": time.Since(now).Microseconds(),
-				}).Debug("Request stop")
-			}()
+			defer func(w *CustomResponseWriter) {
+
+				logger.WithFields(logrus.Fields{
+					"time_µs":             time.Since(now).Microseconds(),
+					"response_size_bytes": w.BytesWritten,
+					"http_status":         w.Status,
+				}).Debug("Request end")
+			}(writer)
 
 			now = time.Now()
-			handler.ServeHTTP(w, r)
+			handler.ServeHTTP(writer, r)
 		})
 	}
 }

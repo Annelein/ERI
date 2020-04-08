@@ -3,18 +3,14 @@ package main
 import (
 	"context"
 	"io"
-	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"strconv"
 	"sync"
-	"syscall"
 	"time"
 
-	"github.com/Dynom/ERI/cmd/web/pubsub"
 	"github.com/Dynom/ERI/cmd/web/pubsub/gcp"
-	"github.com/Dynom/ERI/types"
+	"github.com/Dynom/ERI/runtimer"
 	"google.golang.org/api/option"
 
 	gcppubsub "cloud.google.com/go/pubsub"
@@ -27,8 +23,6 @@ import (
 	"github.com/minio/highwayhash"
 
 	"github.com/juju/ratelimit"
-
-	"github.com/Dynom/ERI/validator"
 
 	"github.com/Dynom/ERI/cmd/web/services"
 
@@ -85,8 +79,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	psClientCtx, psClientCtxCancel := context.WithCancel(context.Background())
 	psClient, err := gcppubsub.NewClient(
-		context.Background(),
+		psClientCtx,
 		conf.Server.GCP.ProjectID,
 		option.WithUserAgent("eri-"+Version),
 		option.WithCredentialsFile(conf.Server.GCP.CredentialsFile),
@@ -102,35 +97,38 @@ func main() {
 		psClient,
 		conf.Server.GCP.PubSubTopic,
 		gcp.WithSubscriptionLabels([]string{Version, conf.Server.InstanceID, strconv.FormatInt(time.Now().Unix(), 10)}),
+		gcp.WithSubscriptionConcurrencyCount(5),
 	)
 
 	// Setting up listening to notifications
 	pubSubCtx, cancel := context.WithCancel(context.Background())
 
-	// Set up channel on which to send signal notifications.
-	// We must use a buffered channel or risk missing the signal
-	// if we're not ready to receive when the signal is sent.
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGTERM, syscall.SIGINT)
-
-	// Cleanup resources when we're interrupted
-	go func() {
-		s := <-c
+	rt := runtimer.New(os.Interrupt, os.Kill)
+	rt.RegisterCallback(func(s os.Signal) {
 		logger.Printf("Captured signal: %v. Starting cleanup", s)
-		logger.Debug("Canceling context")
+		logger.Debug("Canceling pub/sub context")
 		cancel()
+	})
 
+	rt.RegisterCallback(func(s os.Signal) {
 		logger.Debug("Closing Pub/Sub service")
 		deferClose(psSvc, logger)
+	})
 
-		signal.Stop(c)
+	rt.RegisterCallback(func(s os.Signal) {
+		logger.Debug("Canceling GCP client context")
+		psClientCtxCancel()
+	})
+
+	rt.RegisterCallback(func(_ os.Signal) {
 		os.Exit(0)
-	}()
+	})
 
 	hitList := hitlist.New(
 		h,
 		time.Hour*60, // @todo figure out what todo with TTLs
 	)
+
 	myFinder, err := finder.New(
 		hitList.GetValidAndUsageSortedDomains(),
 		finder.WithLengthTolerance(0.2),
@@ -144,65 +142,22 @@ func main() {
 	}
 
 	logger.Debug("Starting listener...")
-	err = psSvc.Listen(pubSubCtx, func(ctx context.Context, notification pubsub.Notification) {
-		parts := types.NewEmailFromParts(notification.Data.Local, notification.Data.Domain)
-		if _, exists := hitList.Has(parts); exists {
-			logger.WithFields(logrus.Fields{
-				"notification": notification,
-			}).Debug("Ignoring notification, as it's already known")
-			return
-		}
-
-		vr := validator.Result{
-			Validations: notification.Data.Validations,
-			Steps:       notification.Data.Steps,
-		}
-
-		err := hitList.Add(parts, vr)
-		if err != nil {
-			logger.WithFields(logrus.Fields{
-				"error": err,
-				"data":  notification.Data,
-				"ctx":   ctx.Err(),
-			}).Error("Unable to add to hitlist")
-		}
-
-		if vr.Validations.IsValidationsForValidDomain() && !myFinder.Exact(parts.Domain) {
-			myFinder.Refresh(hitList.GetValidAndUsageSortedDomains())
-		}
-	})
+	err = psSvc.Listen(pubSubCtx, pubSubNotificationHandler(hitList, logger, myFinder))
 
 	if err != nil {
 		logger.WithError(err).Error("Failed constructing pub/sub client")
 		os.Exit(1)
 	}
 
-	var dialer = &net.Dialer{}
-	if conf.Server.Validator.Resolver != "" {
-		setCustomResolver(dialer, conf.Server.Validator.Resolver)
-	}
-
 	// @todo add a real persisting layer
 	validationResultPersister := &sync.Map{}
 
-	val := validator.NewEmailAddressValidator(dialer)
-
-	// Pick the validator we want to use
-	checkValidator := mapValidatorTypeToValidatorFn(conf.Server.Validator.SuggestValidator, val)
-
-	// Wrap it
-	checkValidator = validatorPersistProxy(validationResultPersister, hitList, logger, checkValidator)
-	checkValidator = validatorNotifyProxy(psSvc, hitList, logger, checkValidator)
-	checkValidator = validatorUpdateFinderProxy(myFinder, hitList, logger, checkValidator)
-	checkValidator = validatorHitListProxy(hitList, logger, checkValidator)
-
-	// Use it
-	suggestSvc := services.NewSuggestService(myFinder, checkValidator, logger)
+	validatorFn := createProxiedValidator(conf, logger, hitList, myFinder, psSvc, validationResultPersister)
+	suggestSvc := services.NewSuggestService(myFinder, validatorFn, logger)
 
 	mux := http.NewServeMux()
-	healthHandler := NewHealthHandler(logger)
-	mux.HandleFunc("/", healthHandler)
-	mux.HandleFunc("/health", healthHandler)
+	registerProfileHandler(mux, conf)
+	registerHealthHandler(mux, logger)
 
 	mux.HandleFunc("/suggest", NewSuggestHandler(logger, suggestSvc))
 	mux.HandleFunc("/autocomplete", NewAutoCompleteHandler(logger, myFinder))
@@ -219,10 +174,6 @@ func main() {
 		GraphiQL:   conf.Server.GraphQL.GraphiQL,
 		Playground: conf.Server.GraphQL.Playground,
 	}))
-
-	if conf.Server.Profiler.Enable {
-		configureProfiler(mux, conf)
-	}
 
 	// @todo status endpoint (or tick logger)
 

@@ -7,3 +7,10 @@ func WithSubscriptionLabels(labels []string) Option {
 		svc.subscriptionLabels = labels
 	}
 }
+
+// WithSubscriptionConcurrencyCount Sets the concurrency count to GCPs subscription receiver
+func WithSubscriptionConcurrencyCount(c int) Option {
+	return func(svc *PubSubSvc) {
+		svc.subscriptionNumProcs = c
+	}
+}

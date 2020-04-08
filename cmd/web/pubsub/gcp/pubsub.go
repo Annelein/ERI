@@ -13,7 +13,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func NewPubSubSvc(logger logrus.FieldLogger, client *gcppubsub.Client, topicName string, options ...Option) PubSubSvc {
+func NewPubSubSvc(logger logrus.FieldLogger, client *gcppubsub.Client, topicName string, options ...Option) *PubSubSvc {
+	if logger == nil {
+		logger = logrus.New()
+	}
+
 	svc := PubSubSvc{
 		logger:    logger,
 		client:    client,
@@ -33,20 +37,24 @@ func NewPubSubSvc(logger logrus.FieldLogger, client *gcppubsub.Client, topicName
 		svc.subscriptionLabels = append(svc.subscriptionLabels, l)
 	}
 
-	return svc
+	return &svc
 }
 
 type NotifyFn func(ctx context.Context, notification pubsub.Notification)
 
 type PubSubSvc struct {
-	logger             logrus.FieldLogger
-	client             *gcppubsub.Client
-	topicName          string
-	topic              *gcppubsub.Topic
-	subscriptionLabels []string
+	logger               logrus.FieldLogger
+	client               *gcppubsub.Client
+	topicName            string
+	topic                *gcppubsub.Topic
+	subscriptionLabels   []string
+	subscriptionNumProcs int
 }
 
 func (svc PubSubSvc) Close() error {
+	if svc.client == nil {
+		return errors.New("client not defined")
+	}
 	err := svc.cleanupSubscription(svc.client.Subscription(svc.getSubscriptionID()))
 	if err != nil {
 		svc.logger.WithError(err).Warn("Failed to end and cleanup subscription")
@@ -103,6 +111,7 @@ func (svc *PubSubSvc) Publish(ctx context.Context, data pubsub.Data) error {
 	return nil
 }
 
+// getTopic returns the topic, after verifying it exists. Multiple calls to getTopic will return the same topic
 func (svc *PubSubSvc) getTopic(ctx context.Context, topicName string) (*gcppubsub.Topic, error) {
 	if svc.topic != nil {
 		return svc.topic, nil
@@ -119,115 +128,79 @@ func (svc *PubSubSvc) getTopic(ctx context.Context, topicName string) (*gcppubsu
 
 }
 
-// ConnectTopic uses the client co connect to GCP and attach to a Topic, while attaching a new unique subscriber for
-// receiving notifications
-func (svc *PubSubSvc) Listen(ctx context.Context, fn NotifyFn) error {
-	topic, err := svc.getTopic(ctx, svc.topicName)
-	if err != nil {
-		svc.logger.WithFields(logrus.Fields{
-			"error": err,
-			"topic": svc.topicName,
-		}).Error("Topic not found for this project")
-		return err
-	}
+func (svc *PubSubSvc) maintainSubscription(ctx context.Context, fn NotifyFn, topic *gcppubsub.Topic) {
+	var subscription *gcppubsub.Subscription
 
 	subscriptionID := svc.getSubscriptionID()
 
-	go func() {
-		var subscription *gcppubsub.Subscription
+	var attempts uint64
+	var retries = -1
+	var lastErrorTime = time.Time{}
+	for {
+		var err error
+		attempts++
+		retries++
 
-		defer func() {
-			err := svc.cleanupSubscription(subscription)
-			if err != nil {
-				var sid string
-				if subscription != nil {
-					sid = subscription.ID()
-				}
+		if retries >= 100 {
+			svc.logger.WithFields(logrus.Fields{
+				"attempt": attempts,
+				"retries": retries,
+			}).Warn("Giving up on receiving notifications. We're in a broken state!")
+			return
+		}
 
+		if ctx.Err() != nil {
+			svc.logger.WithFields(logrus.Fields{
+				"attempt": attempts,
+				"ctx_err": ctx.Err(),
+			}).Warn("Context canceled, giving up")
+			return
+		}
+
+		svc.logger.Debug("Creating subscription")
+		subscription, err = svc.createSubscription(ctx, topic, subscriptionID)
+		if err != nil {
+
+			if !strings.Contains(err.Error(), "AlreadyExists") {
 				svc.logger.WithFields(logrus.Fields{
-					"error":           err,
-					"subscription_id": sid,
-				}).Warn("Unable to cleanup subscription")
-			}
-		}()
-
-		var attempts uint64
-		var retries int = -1
-		var lastErrorTime = time.Time{}
-		for {
-			var err error
-			attempts++
-			retries++
-
-			if retries >= 100 {
-				svc.logger.WithFields(logrus.Fields{
-					"attempt": attempts,
-					"retries": retries,
-				}).Warn("Giving up on receiving notifications. We're in a broken state!")
-				return
-			}
-
-			if ctx.Err() != nil {
-				svc.logger.WithFields(logrus.Fields{
-					"attempt": attempts,
-					"ctx_err": ctx.Err(),
-				}).Warn("Context canceled, giving up")
-				return
+					"error":              err.Error(),
+					"topic":              topic,
+					"subscription":       subscription,
+					"subscription_label": subscriptionID,
+				}).Error("Failed to setup subscription for this project")
+				continue
 			}
 
-			svc.logger.Debug("Creating subscription")
-			subscription, err = svc.createSubscription(ctx, topic, subscriptionID)
-			if err != nil {
+			svc.logger.WithFields(logrus.Fields{
+				"error":           err.Error(),
+				"subscription_id": subscriptionID,
+			}).Warn("Subscription already exists, creating a reference to the existing one")
 
-				if !strings.Contains(err.Error(), "AlreadyExists") {
-					svc.logger.WithFields(logrus.Fields{
-						"error":              err.Error(),
-						"topic":              topic,
-						"subscription":       subscription,
-						"subscription_label": subscriptionID,
-					}).Error("Failed to setup subscription for this project")
-					continue
-				}
+			subscription = svc.client.Subscription(subscriptionID)
+			lastErrorTime = time.Now()
+		}
 
-				svc.logger.WithFields(logrus.Fields{
-					"error":           err.Error(),
-					"subscription_id": subscriptionID,
-				}).Warn("Subscription already exists, creating a reference to the existing one")
-
-				subscription = svc.client.Subscription(subscriptionID)
-				lastErrorTime = time.Now()
+		subscription.ReceiveSettings.NumGoroutines = svc.subscriptionNumProcs
+		err = svc.listen(ctx, subscription, fn)
+		if err != nil {
+			if shouldResetRetries(lastErrorTime, retries) {
+				retries = 0
 			}
 
-			err = svc.listen(ctx, subscription, fn)
-			if err != nil {
-				if shouldResetRetries(lastErrorTime, retries) {
-					retries = 0
-				}
+			if strings.Contains(err.Error(), "NotFound") {
 
-				if strings.Contains(err.Error(), "NotFound") {
-
-					// There can be an inconsistency between a created subscription and one that isn't ready for receiving notifications
-					// the underlying RPC can reply with both AlreadyExists and NotFound errors on the same subscription.
-					if exists, existsErr := subscription.Exists(ctx); exists && existsErr == nil {
-
-						sleepyTime(lastErrorTime, retries, func(t time.Duration) {
-							svc.logger.WithFields(logrus.Fields{
-								"error":            err,
-								"subscription_err": existsErr,
-								"retries":          retries,
-								"sleepy_time":      t,
-							}).Debug("In 'eventually consistent' limbo on GCP. Resource both exists and doesn't exist. Sleeping before retrying a call to Receive again")
-						})
-
-						lastErrorTime = time.Now()
-						continue
-					}
-
-					svc.logger.WithFields(logrus.Fields{
-						"error":    err,
-						"attempts": attempts,
-						"retries":  retries,
-					}).Error("Subscription not available, did it got deleted?")
+				// There can be an inconsistency between a created subscription and one that isn't ready for receiving notifications
+				// the underlying RPC can reply with both AlreadyExists and NotFound errors on the same subscription.
+				if exists, existsErr := subscription.Exists(ctx); exists && existsErr == nil {
+					sleepyTime(lastErrorTime, retries, func(t time.Duration) {
+						svc.logger.WithFields(logrus.Fields{
+							"error":            err,
+							"subscription_err": existsErr,
+							"retries":          retries,
+							"sleepy_time":      t,
+						}).Debug("In 'eventually consistent' limbo on GCP. Resource both exists and doesn't exist. " +
+							"Sleeping before retrying a call to Receive again")
+					})
 
 					lastErrorTime = time.Now()
 					continue
@@ -237,11 +210,36 @@ func (svc *PubSubSvc) Listen(ctx context.Context, fn NotifyFn) error {
 					"error":    err,
 					"attempts": attempts,
 					"retries":  retries,
-				}).Error("Error with pub/sub receivers.")
+				}).Error("Subscription not available, did it got deleted?")
+
 				lastErrorTime = time.Now()
+				continue
 			}
+
+			svc.logger.WithFields(logrus.Fields{
+				"error":    err,
+				"attempts": attempts,
+				"retries":  retries,
+			}).Error("Error with pub/sub receivers.")
+			lastErrorTime = time.Now()
 		}
-	}()
+	}
+}
+
+// Listen uses the client co connect to GCP and attach to a Topic, while attaching a new unique subscriber for
+// receiving notifications. Listen returns immediately
+func (svc *PubSubSvc) Listen(ctx context.Context, fn NotifyFn) error {
+
+	topic, err := svc.getTopic(ctx, svc.topicName)
+	if err != nil {
+		svc.logger.WithFields(logrus.Fields{
+			"error": err,
+			"topic": svc.topicName,
+		}).Error("Topic not found for this project")
+		return err
+	}
+
+	go svc.maintainSubscription(ctx, fn, topic)
 
 	return nil
 }
@@ -266,7 +264,7 @@ func (svc *PubSubSvc) createSubscription(ctx context.Context, topic *gcppubsub.T
 }
 
 // listen listens on a subscription
-func (svc *PubSubSvc) listen(ctx context.Context, subscription *gcppubsub.Subscription, fn NotifyFn) error {
+func (svc *PubSubSvc) listen(ctx context.Context, subscription Subscription, fn NotifyFn) error {
 	if subscription == nil {
 		return errors.New("invalid subscription")
 	}
@@ -275,9 +273,6 @@ func (svc *PubSubSvc) listen(ctx context.Context, subscription *gcppubsub.Subscr
 		svc.logger.WithField("subscription_id", subscription.ID()).Info("Subscription doesn't exist, unable to start receiver.")
 		return err
 	}
-
-	// By default we have 1 routine running, which isn't nearly enough, so amping it up to 6
-	subscription.ReceiveSettings.NumGoroutines = 6
 
 	svc.logger.WithField("subscription", subscription).Info("Starting receiver on subscription.")
 

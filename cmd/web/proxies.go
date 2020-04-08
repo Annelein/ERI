@@ -44,7 +44,10 @@ func validatorHitListProxy(hitList *hitlist.HitList, logger logrus.FieldLogger, 
 
 		err := hitList.Add(parts, vr)
 		if err != nil {
-			logger.WithError(err).Error("HitList rejected value")
+			logger.WithFields(logrus.Fields{
+				"error": err,
+				"parts": parts,
+			}).Error("HitList rejected value")
 		}
 
 		return vr
@@ -75,7 +78,7 @@ func validatorPersistProxy(persist *sync.Map, hitList *hitlist.HitList, logger l
 	}
 }
 
-func validatorNotifyProxy(svc gcp.PubSubSvc, _ *hitlist.HitList, logger logrus.FieldLogger, fn validator.CheckFn) validator.CheckFn {
+func validatorNotifyProxy(svc *gcp.PubSubSvc, _ *hitlist.HitList, logger logrus.FieldLogger, fn validator.CheckFn) validator.CheckFn {
 
 	logger = logger.WithField("middleware", "notification_publisher")
 	return func(ctx context.Context, parts types.EmailParts, options ...validator.ArtifactFn) validator.Result {

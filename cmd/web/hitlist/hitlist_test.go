@@ -430,7 +430,6 @@ func TestHitList_AddDomain(t *testing.T) {
 	type fields struct {
 		hits Hits
 		ttl  time.Duration
-		lock sync.RWMutex
 		h    hash.Hash
 	}
 
@@ -451,7 +450,6 @@ func TestHitList_AddDomain(t *testing.T) {
 			fields: fields{
 				hits: populatedFullyValidHitList.hits,
 				ttl:  populatedFullyValidHitList.ttl,
-				lock: sync.RWMutex{},
 				h:    populatedFullyValidHitList.h,
 			},
 			args: args{
@@ -466,7 +464,6 @@ func TestHitList_AddDomain(t *testing.T) {
 			fields: fields{
 				hits: populatedFullyValidHitList.hits,
 				ttl:  populatedFullyValidHitList.ttl,
-				lock: sync.RWMutex{},
 				h:    populatedFullyValidHitList.h,
 			},
 			args: args{
@@ -481,7 +478,6 @@ func TestHitList_AddDomain(t *testing.T) {
 			fields: fields{
 				hits: populatedFullyValidHitList.hits,
 				ttl:  populatedFullyValidHitList.ttl,
-				lock: sync.RWMutex{},
 				h:    populatedFullyValidHitList.h,
 			},
 			args: args{
@@ -496,7 +492,6 @@ func TestHitList_AddDomain(t *testing.T) {
 			fields: fields{
 				hits: populatedFullyValidHitList.hits,
 				ttl:  populatedFullyValidHitList.ttl,
-				lock: sync.RWMutex{},
 				h:    populatedFullyValidHitList.h,
 			},
 			args: args{
@@ -517,7 +512,7 @@ func TestHitList_AddDomain(t *testing.T) {
 			hl := &HitList{
 				hits: tt.fields.hits,
 				ttl:  tt.fields.ttl,
-				lock: tt.fields.lock,
+				lock: sync.RWMutex{},
 				h:    tt.fields.h,
 			}
 

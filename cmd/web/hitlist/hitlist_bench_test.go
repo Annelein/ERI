@@ -126,9 +126,9 @@ func BenchmarkHitlistHas(b *testing.B) {
 	var t1l, t1d, t2l, t2d bool
 
 	b.ResetTimer()
-	b.ReportAllocs()
 	b.SetParallelism(1)
 	b.Run("Bench nonexisting, mock hasher", func(b *testing.B) {
+		b.ReportAllocs()
 		hl.h = mockHasher{}
 		for i := 0; i < b.N; i++ {
 			t1l, t1d = hl.Has(ExpectNonExisting)
@@ -136,6 +136,7 @@ func BenchmarkHitlistHas(b *testing.B) {
 	})
 
 	b.Run("Bench existing, mock hasher", func(b *testing.B) {
+		b.ReportAllocs()
 		hl.h = mockHasher{}
 		for i := 0; i < b.N; i++ {
 			t2l, t2d = hl.Has(ExpectExisting)
@@ -143,6 +144,7 @@ func BenchmarkHitlistHas(b *testing.B) {
 	})
 
 	b.Run("Bench nonexisting", func(b *testing.B) {
+		b.ReportAllocs()
 		hl.h = h
 		for i := 0; i < b.N; i++ {
 			t1l, t1d = hl.Has(ExpectNonExisting)
@@ -150,6 +152,7 @@ func BenchmarkHitlistHas(b *testing.B) {
 	})
 
 	b.Run("Bench existing", func(b *testing.B) {
+		b.ReportAllocs()
 		hl.h = h
 		for i := 0; i < b.N; i++ {
 			t2l, t2d = hl.Has(ExpectExisting)
